@@ -29,7 +29,7 @@ def rebuild_path(came_from, end):
 
 
 
-def get_shortest_path(start, target, walls, size=9, has_phase_step=False, door_tiles=None):
+def get_shortest_path(start, target, walls, size=9, has_phase_step=False, door_tiles=None, avoid_tiles=None):
     """
     First, we check if the target is one or group of tiles (e.g. an entire row), 
     converting it to a set so my bfs can easily check if it has hit a winning spot hhh.
@@ -41,7 +41,12 @@ def get_shortest_path(start, target, walls, size=9, has_phase_step=False, door_t
     goals = {target} if isinstance(target, tuple) else set(target)
     # If goal's 1 tile (a tuple) -> set(target), else -> convert the whole bunch into a set.
 
-    door_tiles = door_tiles or set()  # Glyph Door -> never passable, empty set if not on level
+    door_tiles = set(door_tiles or set())  # Glyph Door -> never passable, empty set if not on level
+
+    if avoid_tiles:
+        door_tiles |= (set(avoid_tiles) - goals)   # collapsing tiles added to door_tiles (stranger, danger).
+        # - goals so that if the goal is there, we just ignore the collapse and go for it (win's a win).
+    
     max_passes = 1 if has_phase_step else 0
     # If player has phase step, they can pass thru 1 wall, else 0 walls.
 
@@ -87,6 +92,10 @@ def get_next_pc_move(current, target, walls, size=9, **options):
     Otherwise, return the next tile in the path.
     """
     path = get_shortest_path(current, target, walls, size, **options)
+
+    if path is None and options.get("avoid_tiles"):
+        options["avoid_tiles"] = None    # ignore the collapse if nowhere else to go.
+        path = get_shortest_path(current, target, walls, size, **options)
 
     if path is None:
         return None
@@ -138,3 +147,73 @@ def decide_pc_target(pc_pos, goal, powerup_pos, walls, size=11,
         return powerup_pos
     return goal
     # max_detour ensures pc won't be delayed by >= 4 steps
+
+
+def shift_tiles(tiles, direction):
+    """
+    Helper func to shift patrol walls since they occup > 1 tile.
+    """
+    return [(r + direction[0], c + direction[1]) for r, c in tiles]
+
+
+def update_patrol_walls(patrol_state, player_walls, size=11):
+    """
+    Moves every patrol wall one step. If player wall is in the way -> stalls.
+    After 2 stalls -> crystallizes into Anchor shard & position is returned, otherwise -> None.
+    """
+    shard = None
+    remaining = []
+
+    for patrol in patrol_state:
+        new_tiles = shift_tiles(patrol["tiles"], patrol["direction"])
+
+        # bounce off the edge of the board
+        if not all(in_plane(t, size) for t in new_tiles):
+            d_row, d_col = patrol["direction"]
+            patrol["direction"] = (-d_row, -d_col)
+            new_tiles = shift_tiles(patrol["tiles"], patrol["direction"])
+            # if the new position is outta bounds, go opposite direction.
+
+        if any(t in player_walls for t in new_tiles):
+            patrol["stall"] += 1  # blocked by the player's wall, increment stall
+        else:
+            patrol["tiles"] = new_tiles
+            patrol["stall"] = 0
+
+        if patrol["stall"] >= 2 and shard is None:
+            shard = patrol["tiles"][0]        # becomes the Anchor shard
+            continue
+        remaining.append(patrol)
+
+    patrol_state[:] = remaining   # so only the non-crystallized patrols stay
+    return shard
+
+
+def get_patrol_tiles(patrol_state):
+    """
+    Since patrols count as walls for the BFS, this func returns a set of all tiles occupied by patrol walls.
+    """
+    return {tile for patrol in patrol_state for tile in patrol["tiles"]}
+
+
+def get_ring_tiles(size, rings):
+    """
+    If tile distance from edge < rings, it's gon' collapse.
+    """
+    return {(r, c) for r in range(size) for c in range(size)
+            if min(r, c, size - 1 - r, size - 1 - c) < rings}
+            # formula = min(top, left, bottom, right) < rings
+
+
+def get_collapsed_tiles(size, turn_counter, collapse_every=5, max_collapses=3):
+    """
+    To get collapsed tiles + the ring that will collapse next (rounds ending in 4 / 9 / 14).
+    """
+    rings = min(turn_counter // collapse_every, max_collapses)   # how many so far? capped at 3
+    about_to_collapse = (turn_counter % collapse_every == collapse_every - 1)
+    
+    if about_to_collapse and rings < max_collapses:
+        rings += 1
+    
+    return get_ring_tiles(size, rings)
+

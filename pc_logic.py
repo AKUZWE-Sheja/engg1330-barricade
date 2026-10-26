@@ -48,7 +48,7 @@ def get_shortest_path(start, target, walls, size=9, has_phase_step=False, door_t
         # - goals so that if the goal is there, we just ignore the collapse and go for it (win's a win).
     
     max_passes = 1 if has_phase_step else 0
-    # If player has phase step, they can pass thru 1 wall, else 0 walls.
+    # If opponent has phase step, they can pass thru 1 wall, else 0 walls.
 
     start_state = (start, 0)  # (tile, walls_passed)
 
@@ -86,9 +86,9 @@ def get_shortest_path(start, target, walls, size=9, has_phase_step=False, door_t
 
 def get_next_pc_move(current, target, walls, size=9, **options):
     """
-    Returns the single tile the player should step to this turn.
-    If None -> player is stuck and should surrender? or place a wall.
-    If len(path) == 1 -> player is already on the goal yay.
+    Returns the single tile the opponent should step to this turn.
+    If None -> opponent is stuck and should surrender? or place a wall.
+    If len(path) == 1 -> opponent is already on the goal yay.
     Otherwise, return the next tile in the path.
     """
     path = get_shortest_path(current, target, walls, size, **options)
@@ -120,26 +120,27 @@ def path_length(path):
 
 
 def decide_pc_target(pc_pos, goal, powerup_pos, walls, size=11,
-                     player_pos=None, max_detour=4, door_tiles=None):
+                     opponent_pos=None, max_detour=4, door_tiles=None):
     """
     Decides: go to the goal, or detour to grab the Phase Step first?
-    If the player can get there first, nope.
+    If the opponent can get there first, nope.
     """
 
     if powerup_pos is None:
         return goal
 
     direct = get_shortest_path(pc_pos, goal, walls, size, door_tiles=door_tiles)
-    to_powerup = get_shortest_path(pc_pos, powerup_pos, walls, size)
+    to_powerup = get_shortest_path(pc_pos, powerup_pos, walls, size, door_tiles=door_tiles)
     from_powerup = get_shortest_path(powerup_pos, goal, walls, size,
                                      has_phase_step=True, door_tiles=door_tiles)
+    
     if to_powerup is None or from_powerup is None:
         return goal
 
-    if player_pos is not None:
-        player_to_powerup = get_shortest_path(player_pos, powerup_pos, walls, size)
-        if (player_to_powerup is not None
-                and path_length(player_to_powerup) < path_length(to_powerup)):
+    if opponent_pos is not None:
+        opponent_to_powerup = get_shortest_path(opponent_pos, powerup_pos, walls, size, door_tiles=door_tiles)
+        if (opponent_to_powerup is not None
+                and path_length(opponent_to_powerup) < path_length(to_powerup)):
             return goal
 
     detour_cost = path_length(to_powerup) + path_length(from_powerup)
@@ -156,9 +157,9 @@ def shift_tiles(tiles, direction):
     return [(r + direction[0], c + direction[1]) for r, c in tiles]
 
 
-def update_patrol_walls(patrol_state, player_walls, size=11):
+def update_patrol_walls(patrol_state, opponent_walls, size=11):
     """
-    Moves every patrol wall one step. If player wall is in the way -> stalls.
+    Moves every patrol wall one step. If opponent wall is in the way -> stalls.
     After 2 stalls -> crystallizes into Anchor shard & position is returned, otherwise -> None.
     """
     shard = None
@@ -174,8 +175,8 @@ def update_patrol_walls(patrol_state, player_walls, size=11):
             new_tiles = shift_tiles(patrol["tiles"], patrol["direction"])
             # if the new position is outta bounds, go opposite direction.
 
-        if any(t in player_walls for t in new_tiles):
-            patrol["stall"] += 1  # blocked by the player's wall, increment stall
+        if any(t in opponent_walls for t in new_tiles):
+            patrol["stall"] += 1  # blocked by the opponent's wall, increment stall
         else:
             patrol["tiles"] = new_tiles
             patrol["stall"] = 0
@@ -258,70 +259,77 @@ def get_overclock_moves(current, target, walls, size=13, **options):
     return moves
 
 
-def should_use_overclock(pc_path, player_path):
+def should_use_overclock(pc_path, opponent_path):
     """
     Only use it when the falling behind.
     """
-    return path_length(pc_path) > path_length(player_path)
+    return path_length(pc_path) > path_length(opponent_path)
 
 
 def can_place_wall(turn_counter, sudden_death_round=20):
     """
-    Player can place walls as long as turn_counter <= 20.
+    opponent can place walls as long as turn_counter <= 20.
     """
     return turn_counter <= sudden_death_round
 
 
-def is_wall_placement_legal(tile, walls, player_pos, pc_pos, player_goal, pc_goal, size, protected=None):
+def is_wall_placement_legal(tile, walls, opponent_pos, pc_pos, opponent_goal, pc_goal, size, protected=None, door_tiles=None, avoid_tiles=None):
     
-    if tile in walls or tile in (player_pos, pc_pos):
+    if tile in walls or tile in (opponent_pos, pc_pos):
         return False
-    # can't if wall already there or if player is there.
+    # can't if wall already there or if opponent is there.
 
     if protected and tile in protected:
         return False
     
     new_walls = walls | {tile} # a simulation
     
-    return (get_shortest_path(player_pos, player_goal, new_walls, size) is not None
-            and get_shortest_path(pc_pos, pc_goal, new_walls, size) is not None)
-    # Total player boxing in isn't allowed
+    return (get_shortest_path(opponent_pos, opponent_goal, new_walls, size, door_tiles=door_tiles, avoid_tiles=avoid_tiles) is not None
+            and get_shortest_path(pc_pos, pc_goal, new_walls, size, door_tiles=door_tiles, avoid_tiles=avoid_tiles) is not None)
+    # Total opponent boxing in isn't allowed
 
 
-def choose_wall(player_pos, pc_pos, player_goal, pc_goal, walls, size, protected=None, min_gain=2):
+def choose_wall(opponent_pos, pc_pos, opponent_goal, pc_goal, walls, size, protected=None, door_tiles=None, avoid_tiles=None, min_gain=2):
     """
     Returns the best tile to block, or None (= just move instead).
     """
-    player_path = get_shortest_path(player_pos, player_goal, walls, size)
+    opponent_path = get_shortest_path(opponent_pos, opponent_goal, walls, size)
     pc_path = get_shortest_path(pc_pos, pc_goal, walls, size)
 
-    if player_path is None or pc_path is None:
+    if opponent_path is None or pc_path is None:
         return None
     
-    if path_length(player_path) > path_length(pc_path):
+    if path_length(opponent_path) > path_length(pc_path):
         return None  # we're already winning
 
     best_tile, best_score = None, 0
 
-    for tile in player_path[1:-1]:  # only try tiles on the player's route
-        if not is_wall_placement_legal(tile, walls, player_pos, pc_pos,
-                                       player_goal, pc_goal, size, protected):
+    for tile in opponent_path[1:-1]:  # only try tiles on the opponent's route
+        if not is_wall_placement_legal(tile, walls, opponent_pos, pc_pos,
+                                       opponent_goal, pc_goal, size, protected, door_tiles=door_tiles, avoid_tiles=avoid_tiles):
             continue
 
         new_walls = walls | {tile}
 
-        player_gain = (path_length(get_shortest_path(player_pos, player_goal, new_walls, size))
-                       - path_length(player_path))
-        # How many extra detour steps does this wall make the player to take?
+        new_opponent_path = get_shortest_path(opponent_pos, opponent_goal, new_walls, size, door_tiles=door_tiles, avoid_tiles=avoid_tiles)
+        new_pc_path = get_shortest_path(pc_pos, pc_goal, new_walls, size, door_tiles=door_tiles, avoid_tiles=avoid_tiles)
 
-        pc_loss = (path_length(get_shortest_path(pc_pos, pc_goal, new_walls, size))
-                   - path_length(pc_path))
+        new_opponent_len = path_length(new_opponent_path)
+        new_pc_len = path_length(new_pc_path)
+
+        if new_opponent_len is None or new_pc_len is None:
+            continue
+
+        opponent_gain = new_opponent_len - path_length(opponent_path)
+        # How many extra detour steps does this wall make the opponent to take?
+        
+        pc_loss = new_pc_len - path_length(pc_path)
         # Does it affect my route too?
 
-        score = player_gain - pc_loss  # ROI basically, weighting gains
+        score = opponent_gain - pc_loss  # ROI basically, weighting gains
 
         if score >= min_gain and score > best_score:
             best_tile, best_score = tile, score
             # best_score is best score so far, best_tile is the tile that gives that score.
-            
+
     return best_tile

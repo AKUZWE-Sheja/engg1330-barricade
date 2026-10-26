@@ -102,3 +102,39 @@ def update_phase_step(has_phase_step, new_tile, walls):
     if new_tile in walls:
         return False
     return has_phase_step
+
+def path_length(path):
+    """
+    To decide if grabbing a phase step is worth it.
+    """
+    return None if path is None else len(path) - 1
+
+
+def decide_pc_target(pc_pos, goal, powerup_pos, walls, size=11,
+                     player_pos=None, max_detour=4, door_tiles=None):
+    """
+    Decides: go to the goal, or detour to grab the Phase Step first?
+    If the player can get there first, nope.
+    """
+
+    if powerup_pos is None:
+        return goal
+
+    direct = get_shortest_path(pc_pos, goal, walls, size, door_tiles=door_tiles)
+    to_powerup = get_shortest_path(pc_pos, powerup_pos, walls, size)
+    from_powerup = get_shortest_path(powerup_pos, goal, walls, size,
+                                     has_phase_step=True, door_tiles=door_tiles)
+    if to_powerup is None or from_powerup is None:
+        return goal
+
+    if player_pos is not None:
+        player_to_powerup = get_shortest_path(player_pos, powerup_pos, walls, size)
+        if (player_to_powerup is not None
+                and path_length(player_to_powerup) < path_length(to_powerup)):
+            return goal
+
+    detour_cost = path_length(to_powerup) + path_length(from_powerup)
+    if direct is None or detour_cost <= path_length(direct) + max_detour:
+        return powerup_pos
+    return goal
+    # max_detour ensures pc won't be delayed by >= 4 steps

@@ -217,3 +217,111 @@ def get_collapsed_tiles(size, turn_counter, collapse_every=5, max_collapses=3):
     
     return get_ring_tiles(size, rings)
 
+
+def get_winning_goal(level, size, turn_counter, lockdown_node=None, goal_row=None):
+    """
+    Level 1-2: the final row. 
+    Level 3: the lockdown node once the goal edge collapses.
+    """
+    if goal_row is None:
+        goal_row = size - 1
+    goal_tiles = {(goal_row, col) for col in range(size)}
+    # default -> last row of the board
+
+    if level == 3 and turn_counter >= 5 and lockdown_node is not None:
+        return lockdown_node
+    return goal_tiles
+
+
+def get_active_walls(wall_ages, turn_counter, lifetime=8):
+    """
+    wall_ages is a dictionary = {tile: round_placed}. 
+    Walls aged > 8 die.
+    """
+    return {tile for tile, placed in wall_ages.items()
+            if turn_counter - placed < lifetime}
+
+
+def get_overclock_moves(current, target, walls, size=13, **options):
+    """
+    Overclock = two enemy steps in one turn.
+    """
+    moves = []
+    for _ in range(2):
+        nxt = get_next_pc_move(current, target, walls, size, **options)
+        if nxt is None or nxt == current:
+            break
+            # if boxed in or won, stop.
+        moves.append(nxt)
+        current = nxt
+
+    return moves
+
+
+def should_use_overclock(pc_path, player_path):
+    """
+    Only use it when the falling behind.
+    """
+    return path_length(pc_path) > path_length(player_path)
+
+
+def can_place_wall(turn_counter, sudden_death_round=20):
+    """
+    Player can place walls as long as turn_counter <= 20.
+    """
+    return turn_counter <= sudden_death_round
+
+
+def is_wall_placement_legal(tile, walls, player_pos, pc_pos, player_goal, pc_goal, size, protected=None):
+    
+    if tile in walls or tile in (player_pos, pc_pos):
+        return False
+    # can't if wall already there or if player is there.
+
+    if protected and tile in protected:
+        return False
+    
+    new_walls = walls | {tile} # a simulation
+    
+    return (get_shortest_path(player_pos, player_goal, new_walls, size) is not None
+            and get_shortest_path(pc_pos, pc_goal, new_walls, size) is not None)
+    # Total player boxing in isn't allowed
+
+
+def choose_wall(player_pos, pc_pos, player_goal, pc_goal, walls, size, protected=None, min_gain=2):
+    """
+    Returns the best tile to block, or None (= just move instead).
+    """
+    player_path = get_shortest_path(player_pos, player_goal, walls, size)
+    pc_path = get_shortest_path(pc_pos, pc_goal, walls, size)
+
+    if player_path is None or pc_path is None:
+        return None
+    
+    if path_length(player_path) > path_length(pc_path):
+        return None  # we're already winning
+
+    best_tile, best_score = None, 0
+
+    for tile in player_path[1:-1]:  # only try tiles on the player's route
+        if not is_wall_placement_legal(tile, walls, player_pos, pc_pos,
+                                       player_goal, pc_goal, size, protected):
+            continue
+
+        new_walls = walls | {tile}
+
+        player_gain = (path_length(get_shortest_path(player_pos, player_goal, new_walls, size))
+                       - path_length(player_path))
+        # How many extra detour steps does this wall make the player to take?
+
+        pc_loss = (path_length(get_shortest_path(pc_pos, pc_goal, new_walls, size))
+                   - path_length(pc_path))
+        # Does it affect my route too?
+
+        score = player_gain - pc_loss  # ROI basically, weighting gains
+
+        if score >= min_gain and score > best_score:
+            best_tile, best_score = tile, score
+            # best_score is best score so far, best_tile is the tile that gives that score.
+            
+    return best_tile
